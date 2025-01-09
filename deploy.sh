@@ -1,5 +1,3 @@
-#!/bin/bash
-
 # Enable debugging
 set -x
 
@@ -343,20 +341,3 @@ fi
 # Grant access to the Key Vault
 az keyvault set-policy --name $KEY_VAULT_NAME --object-id $BACKEND_PRINCIPAL_ID --secret-permissions get list
 az keyvault set-policy --name $KEY_VAULT_NAME --object-id $FRONTEND_PRINCIPAL_ID --secret-permissions get list
-
-# Grant the user access to the Key Vault
-az keyvault set-policy --name $KEY_VAULT_NAME --object-id $USER_OBJECT_ID --secret-permissions get list
-
-# Assign AcrPull role to the backend app managed identity
-az role assignment create --assignee $BACKEND_PRINCIPAL_ID --role AcrPull --scope $ACR_ID
-
-# Assign AcrPull role to the frontend app managed identity
-az role assignment create --assignee $FRONTEND_PRINCIPAL_ID --role AcrPull --scope $ACR_ID
-
-# Output the URLs of the deployed applications
-BACKEND_URL=$(az webapp show --resource-group $RESOURCE_GROUP --name $BACKEND_APP_NAME --query defaultHostName -o tsv)
-FRONTEND_URL=$(az webapp show --resource-group $RESOURCE_GROUP --name $FRONTEND_APP_NAME --query defaultHostName -o tsv)
-
-echo "Backend URL: https://$BACKEND_URL"
-echo "Frontend URL: https://$FRONTEND_URL"
-
