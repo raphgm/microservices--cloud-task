@@ -1,0 +1,48 @@
+name: Deploy Infrastructure
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Azure CLI
+      uses: azure/CLI@v1
+      with:
+        azcliversion: '2.30.0'
+
+    - name: Log in to Azure
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Run deploy.sh script
+      run: |
+        chmod +x /Users/raphaelgab-momoh/Desktop/assignment/spring-boot-react-example/Infrastructure/deploy.sh
+        /Users/raphaelgab-momoh/Desktop/assignment/spring-boot-react-example/Infrastructure/deploy.sh
+      env:
+        SQL_DATABASE_NAME: ${{ secrets.SQL_DATABASE_NAME }}
+        SQL_ADMIN_USERNAME: ${{ secrets.SQL_ADMIN_USERNAME }}
+        SQL_ADMIN_PASSWORD: ${{ secrets.SQL_ADMIN_PASSWORD }}
+        KEY_VAULT_ACCESS_OBJECT_ID: ${{ secrets.KEY_VAULT_ACCESS_OBJECT_ID }}
+        SQL_SERVER_NAME: ${{ secrets.SQL_SERVER_NAME }}
+        AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+        BACKEND_APP_CLIENT_ID: ${{ secrets.BACKEND_APP_CLIENT_ID }}
+        FRONTEND_APP_CLIENT_ID: ${{ secrets.FRONTEND_APP_CLIENT_ID }}
+        SP_APP_ID: ${{ secrets.SP_APP_ID }}
+        SP_PASSWORD: ${{ secrets.SP_PASSWORD }}
+        ADMIN_GROUP_ID: ${{ secrets.ADMIN_GROUP_ID }}
+        USER_GROUP_ID: ${{ secrets.USER_GROUP_ID }}
+        RESOURCE_GROUP: ${{ secrets.RESOURCE_GROUP }}
+        ACR_NAME: ${{ secrets.ACR_NAME }}
+        USER_EMAIL: ${{ secrets.USER_EMAIL }}
