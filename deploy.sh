@@ -1,3 +1,4 @@
+#!/bin/bash
 # Enable debugging
 set -x
 
@@ -6,34 +7,34 @@ RESOURCE_GROUP="dtaskrg"
 LOCATION="northeurope"
 ACR_NAME="acr0000"
 RANDOM_SUFFIX=$(openssl rand -hex 3)
-BACKEND_APP_NAME="backend-1-app"
-FRONTEND_APP_NAME="frontend-1-app"
+BACKEND_APP_NAME="backend-app-${RANDOM_SUFFIX}"
+FRONTEND_APP_NAME="frontend-app-${RANDOM_SUFFIX}"
 SQL_DATABASE_NAME="dtaskdb"
-SQL_SERVER_NAME="dtaskserver"  # Ensure this is unique globally
+SQL_SERVER_NAME="dtaskserver"
 SQL_ADMIN_USERNAME="sqladmin"
-SQL_ADMIN_PASSWORD="Password123*"
+SQL_ADMIN_PASSWORD=$(openssl rand -base64 16)
 BACKEND_PLAN_NAME="${BACKEND_APP_NAME}-plan"
 FRONTEND_PLAN_NAME="${FRONTEND_APP_NAME}-plan"
-KEY_VAULT_NAME="${ACR_NAME}-kv-${RANDOM_SUFFIX}"  # Use a unique name
-KEY_VAULT_ACCESS_OBJECT_ID="58bf15bd-e182-4c81-a517-76a581ced7b4"  # Replace with your user/object ID
+KEY_VAULT_NAME="${ACR_NAME}-kv"
+KEY_VAULT_ACCESS_OBJECT_ID="58bf15bd-e182-4c81-a517-76a581ced7b4"
 SP_NAME="myServicePrincipal"
 FRONTEND_APP_REDIRECT_URI="http://localhost:3000"
-USER_EMAIL="raphael@rdgmh.onmicrosoft.com"  # Replace with your email
+USER_EMAIL="raphael@rdgmh.onmicrosoft.com"  # Ensure this is set
 USER_DISPLAY_NAME="Raphael"
-USER_PASSWORD=$(openssl rand -base64 16)  # Generate a random password
+USER_PASSWORD=$(openssl rand -base64 16) # Generate a random password
 ADMIN_GROUP_NAME="Admins"
 USER_GROUP_NAME="Users"
 
-# Set environment variables
+# Path to the Terraform directory
+TERRAFORM_DIR="/Users/raphaelgab-momoh/Desktop/success/spring-boot-react-example"
+
+# Export database username and password as environment variables
 export SQL_ADMIN_USERNAME="sqladmin"
-export SQL_ADMIN_PASSWORD="Password123*"
+export SQL_ADMIN_PASSWORD=$(openssl rand -base64 16)
 
-# Paths to Dockerfiles
-FRONTEND_DOCKERFILE_PATH="./frontend/Dockerfile"
-BACKEND_DOCKERFILE_PATH="./backend/Dockerfile"
-
-# Path to the Bicep file
-BICEP_FILE_PATH="./main.bicep"
+# Print the exported variables for verification
+echo "Exported SQL_ADMIN_USERNAME: $SQL_ADMIN_USERNAME"
+echo "Exported SQL_ADMIN_PASSWORD: $SQL_ADMIN_PASSWORD"
 
 # Validate USER_EMAIL
 if [ -z "$USER_EMAIL" ]; then
@@ -47,16 +48,20 @@ if ! [[ "$USER_EMAIL" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; th
   exit 1
 fi
 
+# Check if Azure CLI is logged in
+if ! az account show > /dev/null 2>&1; then
+  echo "ERROR: Please login to Azure CLI using 'az login' before running this script."
+  exit 1
+fi
+
 # Fetch Azure AD Tenant ID
-echo "Fetching Azure AD Tenant ID..."
 AZURE_AD_TENANT_ID=$(az account show --query tenantId --output tsv)
 if [ -z "$AZURE_AD_TENANT_ID" ]; then
-  echo "ERROR: Failed to fetch Azure AD Tenant ID. Please ensure you are logged in to Azure."
+  echo "ERROR: Failed to fetch Azure AD Tenant ID."
   exit 1
 fi
 
 # Create Azure AD app registration for the backend
-echo "Creating Azure AD app registration for the backend..."
 BACKEND_APP_CLIENT_ID=$(az ad app create --display-name "${BACKEND_APP_NAME}-app" --query appId --output tsv)
 if [ -z "$BACKEND_APP_CLIENT_ID" ]; then
   echo "ERROR: Failed to create Azure AD app registration for the backend."
@@ -64,11 +69,9 @@ if [ -z "$BACKEND_APP_CLIENT_ID" ]; then
 fi
 
 # Create a service principal for the backend app
-echo "Creating service principal for the backend app..."
 az ad sp create --id $BACKEND_APP_CLIENT_ID
 
 # Create Azure AD app registration for the frontend
-echo "Creating Azure AD app registration for the frontend..."
 FRONTEND_APP_CLIENT_ID=$(az ad app create --display-name "${FRONTEND_APP_NAME}-app" --query appId --output tsv)
 if [ -z "$FRONTEND_APP_CLIENT_ID" ]; then
   echo "ERROR: Failed to create Azure AD app registration for the frontend."
@@ -76,11 +79,9 @@ if [ -z "$FRONTEND_APP_CLIENT_ID" ]; then
 fi
 
 # Create a service principal for the frontend app
-echo "Creating service principal for the frontend app..."
 az ad sp create --id $FRONTEND_APP_CLIENT_ID
 
 # Create Azure AD groups if they don't exist
-echo "Checking if Azure AD groups exist..."
 ADMIN_GROUP_ID=$(az ad group list --display-name $ADMIN_GROUP_NAME --query "[].id" --output tsv)
 if [ -z "$ADMIN_GROUP_ID" ]; then
   echo "Creating group $ADMIN_GROUP_NAME..."
@@ -98,7 +99,7 @@ else
 fi
 
 # Manually set the Object ID of the existing user
-USER_OBJECT_ID="58bf15bd-e182-4c81-a517-76a581ced7b4"  # Replace with your user/object ID
+USER_OBJECT_ID="58bf15bd-e182-4c81-a517-76a581ced7b4"
 
 if [ -z "$USER_OBJECT_ID" ]; then
   echo "ERROR: USER_OBJECT_ID is not set. Please provide the Object ID of the user."
@@ -121,10 +122,6 @@ else
   echo "User $USER_EMAIL is already a member of group $USER_GROUP_NAME."
 fi
 
-# Login to Azure
-echo "Logging in to Azure..."
-az login
-
 # Check if resource group exists and delete if it does
 if az group exists --name $RESOURCE_GROUP; then
   echo "Resource group $RESOURCE_GROUP already exists. Deleting..."
@@ -141,17 +138,7 @@ az group create --name $RESOURCE_GROUP --location $LOCATION
 deleted_vaults=$(az keyvault list-deleted --query "[?name=='${KEY_VAULT_NAME}'].name" -o tsv)
 if [[ -n $deleted_vaults ]]; then
   echo "Purging deleted Key Vault $KEY_VAULT_NAME..."
-  for i in {1..5}; do
-    az keyvault purge --name $KEY_VAULT_NAME --location $LOCATION && break || sleep 15
-  done
-  echo "Waiting for Key Vault to be purged..."
-  sleep 30  # Wait for the purge operation to complete
-  # Verify the Key Vault has been purged
-  deleted_vaults=$(az keyvault list-deleted --query "[?name=='${KEY_VAULT_NAME}'].name" -o tsv)
-  if [[ -n $deleted_vaults ]]; then
-    echo "ERROR: Failed to purge Key Vault $KEY_VAULT_NAME. Exiting."
-    exit 1
-  fi
+  az keyvault purge --name $KEY_VAULT_NAME --location $LOCATION
 fi
 
 # Check if ACR exists and delete if it does
@@ -179,13 +166,6 @@ if [ -z "$ACR_ID" ]; then
   exit 1
 fi
 
-# Verify ACR DNS resolution
-echo "Verifying ACR DNS resolution..."
-if ! nslookup $ACR_NAME.azurecr.io; then
-  echo "ERROR: Failed to resolve ACR DNS. Please check your DNS configuration."
-  exit 1
-fi
-
 # Create a service principal and assign AcrPush role
 SP_CREDENTIALS=$(az ad sp create-for-rbac --name $SP_NAME --scopes $ACR_ID --role AcrPush --query "{appId: appId, password: password, tenant: tenant}" --output json)
 SP_APP_ID=$(echo $SP_CREDENTIALS | jq -r .appId)
@@ -199,18 +179,17 @@ echo "Service Principal Tenant: $SP_TENANT"
 # Assign AcrPull role to the service principal
 az role assignment create --assignee $SP_APP_ID --role AcrPull --scope $ACR_ID
 
-# Login to ACR using the service principal
-echo "Logging in to ACR using the service principal..."
-az acr login --name $ACR_NAME --username $SP_APP_ID --password $SP_PASSWORD
+# Login to ACR
+az acr login --name $ACR_NAME
 
 # Increase Docker client timeout
 export DOCKER_CLIENT_TIMEOUT=300
 export COMPOSE_HTTP_TIMEOUT=300
 
 # Verify Dockerfile exists in backend and frontend directories, create if not found
-if [ ! -f $BACKEND_DOCKERFILE_PATH ]; then
-  echo "Dockerfile not found in $BACKEND_DOCKERFILE_PATH. Creating a default Dockerfile..."
-  cat <<EOF > $BACKEND_DOCKERFILE_PATH
+if [ ! -f ./backend/Dockerfile ]; then
+  echo "Dockerfile not found in ./backend directory. Creating a default Dockerfile..."
+  cat <<EOF > ./backend/Dockerfile
 # Use an official OpenJDK runtime as a parent image
 FROM openjdk:11-jre-slim
 
@@ -231,9 +210,9 @@ CMD ["java", "-jar", "backend.jar"]
 EOF
 fi
 
-if [ ! -f $FRONTEND_DOCKERFILE_PATH ]; then
-  echo "Dockerfile not found in $FRONTEND_DOCKERFILE_PATH. Creating a default Dockerfile..."
-  cat <<EOF > $FRONTEND_DOCKERFILE_PATH
+if [ ! -f ./frontend/Dockerfile ]; then
+  echo "Dockerfile not found in ./frontend directory. Creating a default Dockerfile..."
+  cat <<EOF > ./frontend/Dockerfile
 # Use an official Node.js runtime as a parent image
 FROM node:14
 
@@ -260,84 +239,80 @@ fi
 # Build and push backend Docker image
 echo "Building and pushing backend Docker image..."
 for i in {1..5}; do
-  docker build -t $ACR_NAME.azurecr.io/backend:latest -f $BACKEND_DOCKERFILE_PATH ./backend && break || sleep 15
+  docker build -t $ACR_NAME.azurecr.io/backend:latest ./backend && break || sleep 15
 done
 for i in {1..5}; do
   docker push $ACR_NAME.azurecr.io/backend:latest && break || sleep 15
 done
 
+# Verify backend Docker image push completion
+for i in {1..5}; do
+  if az acr repository show --name $ACR_NAME --repository backend --query "tags[?contains(@, 'latest')]" | grep -q "latest"; then
+    echo "Backend Docker image push completed."
+    break
+  else
+    echo "Waiting for backend Docker image push to complete..."
+    sleep 15
+  fi
+done
+
 # Build and push frontend Docker image
 echo "Building and pushing frontend Docker image..."
 for i in {1..5}; do
-  docker build -t $ACR_NAME.azurecr.io/frontend:latest -f $FRONTEND_DOCKERFILE_PATH ./frontend && break || sleep 15
+  docker build -t $ACR_NAME.azurecr.io/frontend:latest ./frontend && break || sleep 15
 done
 for i in {1..5}; do
   docker push $ACR_NAME.azurecr.io/frontend:latest && break || sleep 15
 done
 
-# Validate the Bicep file
-echo "Validating Bicep file..."
-az bicep build --file $BICEP_FILE_PATH || { echo "Bicep validation failed. Exiting."; exit 1; }
+# Verify frontend Docker image push completion
+for i in {1..5}; do
+  if az acr repository show --name $ACR_NAME --repository frontend --query "tags[?contains(@, 'latest')]" | grep -q "latest"; then
+    echo "Frontend Docker image push completed."
+    break
+  else
+    echo "Waiting for frontend Docker image push to complete..."
+    sleep 15
+  fi
+done
 
-# Deploy the infrastructure using Bicep
-echo "Deploying infrastructure using Bicep..."
-az deployment group create --resource-group $RESOURCE_GROUP --template-file $BICEP_FILE_PATH \
-  --parameters \
-    location=$LOCATION \
-    sqlServerName=$SQL_SERVER_NAME \
-    sqlAdminUsername=$SQL_ADMIN_USERNAME \
-    sqlAdminPassword=$SQL_ADMIN_PASSWORD \
-    adminGroupId=$ADMIN_GROUP_ID \
-    userGroupId=$USER_GROUP_ID \
-    keyVaultName=$KEY_VAULT_NAME \
-    backendAppName=$BACKEND_APP_NAME \
-    frontendAppName=$FRONTEND_APP_NAME \
-    acrName=$ACR_NAME \
-    backendPlanName=$BACKEND_PLAN_NAME \
-    frontendPlanName=$FRONTEND_PLAN_NAME
+# Navigate to the Terraform directory
+cd $TERRAFORM_DIR
+
+# Initialize Terraform
+echo "Initializing Terraform..."
+terraform init
+
+# Validate the Terraform configuration
+echo "Validating Terraform configuration..."
+terraform validate
+
+# Deploy the infrastructure using Terraform
+echo "Deploying infrastructure using Terraform..."
+terraform apply -auto-approve \
+  -var "location=$LOCATION" \
+  -var "sql_server_name=$SQL_SERVER_NAME" \
+  -var "sql_admin_username=$SQL_ADMIN_USERNAME" \
+  -var "sql_admin_password=$SQL_ADMIN_PASSWORD" \
+  -var "admin_group_ids=[\"$ADMIN_GROUP_ID\"]" \
+  -var "user_group_ids=[\"$USER_GROUP_ID\"]" \
+  -var "user_ids=[\"$USER_OBJECT_ID\"]" \
+  -var "key_vault_name=$KEY_VAULT_NAME" \
+  -var "backend_app_name=$BACKEND_APP_NAME" \
+  -var "frontend_app_name=$FRONTEND_APP_NAME" \
+  -var "backend_plan_name=$BACKEND_PLAN_NAME" \
+  -var "frontend_plan_name=$FRONTEND_PLAN_NAME" \
+  -var "acr_name=$ACR_NAME"
 
 # Wait for resources to be fully provisioned
 echo "Waiting for resources to be fully provisioned..."
 sleep 300
 
-# Verify the Backend Web App exists
-echo "Verifying the Backend Web App exists..."
-BACKEND_APP_NAME=$(az webapp list --resource-group $RESOURCE_GROUP --query "[?starts_with(name, 'backend-app-')].name" --output tsv)
-if [ -z "$BACKEND_APP_NAME" ]; then
-  echo "ERROR: Backend Web App not found in resource group $RESOURCE_GROUP."
-  echo "Listing all web apps in the resource group for debugging:"
-  az webapp list --resource-group $RESOURCE_GROUP --output table
-  exit 1
-fi
+# Output the URLs of the deployed applications
+BACKEND_URL=$(terraform output -raw backend_app_url)
+FRONTEND_URL=$(terraform output -raw frontend_app_url)
 
-echo "Backend Web App Name: $BACKEND_APP_NAME"
+echo "Backend URL: https://$BACKEND_URL"
+echo "Frontend URL: https://$FRONTEND_URL"
 
-# Assign the managed identity to the backend app
-BACKEND_PRINCIPAL_ID=$(az webapp identity assign --name $BACKEND_APP_NAME --resource-group $RESOURCE_GROUP --query principalId --output tsv)
-if [ -z "$BACKEND_PRINCIPAL_ID" ]; then
-  echo "Failed to assign managed identity to backend app. Exiting."
-  exit 1
-fi
-
-# Verify the Frontend Web App exists
-echo "Verifying the Frontend Web App exists..."
-FRONTEND_APP_NAME=$(az webapp list --resource-group $RESOURCE_GROUP --query "[?starts_with(name, 'frontend-app-')].name" --output tsv)
-if [ -z "$FRONTEND_APP_NAME" ]; then
-  echo "ERROR: Frontend Web App not found in resource group $RESOURCE_GROUP."
-  echo "Listing all web apps in the resource group for debugging:"
-  az webapp list --resource-group $RESOURCE_GROUP --output table
-  exit 1
-fi
-
-echo "Frontend Web App Name: $FRONTEND_APP_NAME"
-
-# Assign the managed identity to the frontend app
-FRONTEND_PRINCIPAL_ID=$(az webapp identity assign --name $FRONTEND_APP_NAME --resource-group $RESOURCE_GROUP --query principalId --output tsv)
-if [ -z "$FRONTEND_PRINCIPAL_ID" ]; then
-  echo "Failed to assign managed identity to frontend app. Exiting."
-  exit 1
-fi
-
-# Grant access to the Key Vault
-az keyvault set-policy --name $KEY_VAULT_NAME --object-id $BACKEND_PRINCIPAL_ID --secret-permissions get list
-az keyvault set-policy --name $KEY_VAULT_NAME --object-id $FRONTEND_PRINCIPAL_ID --secret-permissions get list
+echo "Deployment completed successfully!"

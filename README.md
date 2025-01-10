@@ -139,510 +139,368 @@ The infrastructure includes **Azure Monitor** and **Log Analytics** for monitori
 main.bicep
 
  File
-```bicep
-
-
-// Parameters
-param location string = resourceGroup().location
-param sqlServerName string
-param sqlAdminUsername string
-@secure()
-param sqlAdminPassword string
-param sqlDatabaseName string
-param acrName string
-param backendAppName string
-param frontendAppName string
-param backendAppClientId string
-param frontendAppClientId string
-param azureAdTenantId string
-param keyVaultAccessObjectId string
-param spAppId string
-@secure()
-param spPassword string
-param adminGroupId string
-param userGroupId string
-
-// Resources
-
-// SQL Server
-resource sqlServer 'Microsoft.Sql/servers@2021-11-01' = {
-  name: sqlServerName
-  location: location
-  properties: {
-    administratorLogin: sqlAdminUsername
-    administratorLoginPassword: sqlAdminPassword
-  }
-}
-
-// SQL Database
-resource sqlDatabase 'Microsoft.Sql/servers/databases@2021-11-01' = {
-  parent: sqlServer
-  name: sqlDatabaseName
-  location: location
-  properties: {
-    collation: 'SQL_Latin1_General_CP1_CI_AS'
-    maxSizeBytes: 2147483648
-    sampleName: 'AdventureWorksLT'
-  }
-}
-
-// App Service Plan for Backend
-resource backendPlan 'Microsoft.Web/serverfarms@2021-02-01' = {
-  name: '${backendAppName}-plan'
-  location: location
-  sku: {
-    name: 'P1v2'
-    tier: 'PremiumV2'
-    capacity: 1
-  }
-  properties: {
-    reserved: true
-  }
-}
-
-// App Service Plan for Frontend
-resource frontendPlan 'Microsoft.Web/serverfarms@2021-02-01' = {
-  name: '${frontendAppName}-plan'
-  location: location
-  sku: {
-    name: 'P1v2'
-    tier: 'PremiumV2'
-    capacity: 1
-  }
-  properties: {
-    reserved: true
-  }
-}
-
-// Backend App Service
-resource backendApp 'Microsoft.Web/sites@2021-02-01' = {
-  name: backendAppName
-  location: location
-  identity: {
-    type: 'SystemAssigned'
-  }
-  properties: {
-    serverFarmId: backendPlan.id
-    siteConfig: {
-      appSettings: [
-        {
-          name: 'AZURE_AD_CLIENT_ID'
-          value: backendAppClientId
-        }
-        {
-          name: 'AZURE_AD_TENANT_ID'
-          value: azureAdTenantId
-        }
-        {
-          name: 'DOCKER_REGISTRY_SERVER_URL'
-          value: 'https://${acrName}.azurecr.io'
-        }
-        {
-          name: 'DOCKER_REGISTRY_SERVER_USERNAME'
-          value: spAppId
-        }
-        {
-          name: 'DOCKER_REGISTRY_SERVER_PASSWORD'
-          value: spPassword
-        }
-        {
-          name: 'WEBSITES_ENABLE_APP_SERVICE_STORAGE'
-          value: 'false'
-        }
-      ]
-    }
-  }
-}
-
-// Backend App Authentication Settings
-resource backendAuth 'Microsoft.Web/sites/config@2021-02-01' = {
-  parent: backendApp
-  name: 'authsettings'
-  properties: {
-    enabled: true
-    defaultProvider: 'AzureActiveDirectory'
-    clientId: backendAppClientId
-    allowedAudiences: [
-      'https://${backendAppName}.azurewebsites.net'
-    ]
-    issuer: '${environment().authentication.loginEndpoint}${azureAdTenantId}/v2.0'
-    additionalLoginParams: [
-      'response_type=code id_token',
-      'scope=openid profile email'
-    ]
-    unauthenticatedClientAction: 'RedirectToLoginPage'
-    tokenStoreEnabled: true
-    validateIssuer: true
-  }
-}
-
-// Frontend App Service
-resource frontendApp 'Microsoft.Web/sites@2021-02-01' = {
-  name: frontendAppName
-  location: location
-  identity: {
-    type: 'SystemAssigned'
-  }
-  properties: {
-    serverFarmId: frontendPlan.id
-    siteConfig: {
-      appSettings: [
-        {
-          name: 'REACT_APP_API_URL'
-          value: 'https://${backendAppName}.azurewebsites.net'
-        }
-        {
-          name: 'REACT_APP_AZURE_AD_CLIENT_ID'
-          value: frontendAppClientId
-        }
-        {
-          name: 'REACT_APP_AZURE_AD_TENANT_ID'
-          value: azureAdTenantId
-        }
-        {
-          name: 'REACT_APP_AZURE_AD_REDIRECT_URI'
-          value: 'http://localhost:3000'
-        }
-        {
-          name: 'DOCKER_REGISTRY_SERVER_URL'
-          value: 'https://${acrName}.azurecr.io'
-        }
-        {
-          name: 'DOCKER_REGISTRY_SERVER_USERNAME'
-          value: spAppId
-        }
-        {
-          name: 'DOCKER_REGISTRY_SERVER_PASSWORD'
-          value: spPassword
-        }
-        {
-          name: 'WEBSITES_ENABLE_APP_SERVICE_STORAGE'
-          value: 'false'
-        }
-      ]
-    }
-  }
-}
-
-// Frontend App Authentication Settings
-resource frontendAuth 'Microsoft.Web/sites/config@2021-02-01' = {
-  parent: frontendApp
-  name: 'authsettings'
-  properties: {
-    enabled: true
-    defaultProvider: 'AzureActiveDirectory'
-    clientId: frontendAppClientId
-    allowedAudiences: [
-      'https://${frontendAppName}.azurewebsites.net'
-    ]
-    issuer: '${environment().authentication.loginEndpoint}${azureAdTenantId}/v2.0'
-    additionalLoginParams: [
-      'response_type=code id_token',
-      'scope=openid profile email'
-    ]
-    unauthenticatedClientAction: 'RedirectToLoginPage'
-    tokenStoreEnabled: true
-    validateIssuer: true
-  }
-}
-
-// Autoscale settings for backend
-resource backendAutoscale 'Microsoft.Insights/autoscalesettings@2015-04-01' = {
-  name: '${backendAppName}-autoscale'
-  location: location
-  properties: {
-    profiles: [
-      {
-        name: 'defaultProfile'
-        capacity: {
-          minimum: '1'
-          maximum: '10'
-          default: '1'
-        }
-        rules: [
-          {
-            metricTrigger: {
-              metricName: 'CpuTime' // Correct metric for App Services
-              metricNamespace: 'Microsoft.Web/sites'
-              metricResourceUri: backendApp.id
-              timeGrain: 'PT1M'
-              statistic: 'Average'
-              timeWindow: 'PT5M'
-              timeAggregation: 'Average'
-              operator: 'GreaterThan'
-              threshold: 70
-            }
-            scaleAction: {
-              direction: 'Increase'
-              type: 'ChangeCount'
-              value: '1'
-              cooldown: 'PT1M'
-            }
-          }
-          {
-            metricTrigger: {
-              metricName: 'CpuTime' // Correct metric for App Services
-              metricNamespace: 'Microsoft.Web/sites'
-              metricResourceUri: backendApp.id
-              timeGrain: 'PT1M'
-              statistic: 'Average'
-              timeWindow: 'PT5M'
-              timeAggregation: 'Average'
-              operator: 'LessThan'
-              threshold: 30
-            }
-            scaleAction: {
-              direction: 'Decrease'
-              type: 'ChangeCount'
-              value: '1'
-              cooldown: 'PT1M'
-            }
-          }
-        ]
-      }
-    ]
-    enabled: true
-    targetResourceUri: backendPlan.id
-  }
-}
-
-// Autoscale settings for frontend
-resource frontendAutoscale 'Microsoft.Insights/autoscalesettings@2015-04-01' = {
-  name: '${frontendAppName}-autoscale'
-  location: location
-  properties: {
-    profiles: [
-      {
-        name: 'defaultProfile'
-        capacity: {
-          minimum: '1'
-          maximum: '10'
-          default: '1'
-        }
-        rules: [
-          {
-            metricTrigger: {
-              metricName: 'CpuTime' // Correct metric for App Services
-              metricNamespace: 'Microsoft.Web/sites'
-              metricResourceUri: frontendApp.id
-              timeGrain: 'PT1M'
-              statistic: 'Average'
-              timeWindow: 'PT5M'
-              timeAggregation: 'Average'
-              operator: 'GreaterThan'
-              threshold: 70
-            }
-            scaleAction: {
-              direction: 'Increase'
-              type: 'ChangeCount'
-              value: '1'
-              cooldown: 'PT1M'
-            }
-          }
-          {
-            metricTrigger: {
-              metricName: 'CpuTime' // Correct metric for App Services
-              metricNamespace: 'Microsoft.Web/sites'
-              metricResourceUri: frontendApp.id
-              timeGrain: 'PT1M'
-              statistic: 'Average'
-              timeWindow: 'PT5M'
-              timeAggregation: 'Average'
-              operator: 'LessThan'
-              threshold: 30
-            }
-            scaleAction: {
-              direction: 'Decrease'
-              type: 'ChangeCount'
-              value: '1'
-              cooldown: 'PT1M'
-            }
-          }
-        ]
-      }
-    ]
-    enabled: true
-    targetResourceUri: frontendPlan.id
-  }
-}
-
-// Key Vault
-resource keyVault 'Microsoft.KeyVault/vaults@2021-04-01-preview' = {
-  name: '${acrName}-kv'
-  location: location
-  properties: {
-    tenantId: subscription().tenantId
-    sku: {
-      family: 'A'
-      name: 'standard'
-    }
-    accessPolicies: [
-      {
-        tenantId: subscription().tenantId
-        objectId: keyVaultAccessObjectId
-        permissions: {
-          secrets: [
-            'get'
-            'list'
-          ]
-        }
-      }
-      {
-        tenantId: subscription().tenantId
-        objectId: adminGroupId
-        permissions: {
-          secrets: [
-            'get'
-            'list'
-            'set'
-            'delete'
-          ]
-        }
-      }
-      {
-        tenantId: subscription().tenantId
-        objectId: userGroupId
-        permissions: {
-          secrets: [
-            'get'
-            'list'
-          ]
-        }
-      }
-    ]
-  }
-}
-
-// Log Analytics Workspace for Monitoring
-resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2021-06-01' = {
-  name: 'log-analytics-${uniqueString(resourceGroup().id)}'
-  location: location
-  properties: {
-    sku: {
-      name: 'PerGB2018'
-    }
-  }
-}
-
-// Application Insights for Monitoring
-resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
-  name: 'appInsights-${uniqueString(resourceGroup().id)}'
-  location: location
-  kind: 'web'
-  properties: {
-    Application_Type: 'web'
-    WorkspaceResourceId: logAnalytics.id
-  }
-}
 ```
-
-### Summary of the Bicep File:
-1. **Parameters:** Defines various parameters for the deployment, including SQL server details, application names, Azure AD client IDs, and more.
-2. **SQL Server and Database:** Creates a SQL Server and a sample SQL Database.
-3. **App Service Plans:** Creates App Service Plans for both backend and frontend applications.
-4. **App Services:** Creates App Services for backend and frontend applications with appropriate configurations and environment variables.
-5. **Authentication Settings:** Configures Azure Active Directory authentication for both backend and frontend applications.
-6. **Autoscale Settings:** Configures autoscale settings for both backend and frontend applications using the `CpuTime` metric.
-7. **Key Vault:** Creates a Key Vault with access policies for different object IDs.
-8. **Log Analytics and Application Insights:** Creates a Log Analytics workspace and Application Insights for monitoring.
-
-
-
-
-## The Deploy.sh Script
-
-```bash
 #!/bin/bash
 
-# Parameters
-sqlDatabaseName=$SQL_DATABASE_NAME
-sqlAdminUsername=$SQL_ADMIN_USERNAME
-sqlAdminPassword=$SQL_ADMIN_PASSWORD
-keyVaultAccessObjectId=$KEY_VAULT_ACCESS_OBJECT_ID
-sqlServerName=$SQL_SERVER_NAME
-azureAdTenantId=$AZURE_AD_TENANT_ID
-backendAppClientId=$BACKEND_APP_CLIENT_ID
-frontendAppClientId=$FRONTEND_APP_CLIENT_ID
-spAppId=$SP_APP_ID
-spPassword=$SP_PASSWORD
-adminGroupId=$ADMIN_GROUP_ID
-userGroupId=$USER_GROUP_ID
+# Enable debugging
+set -x
 
-# Deploy the Bicep template
-echo "Deploying infrastructure using Bicep..."
-az deployment group create --resource-group dtaskrg --template-file /Users/raphaelgab-momoh/Desktop/assignment/spring-boot-react-example/Infrastructure/main.bicep --parameters acrName=acr0000 backendAppName=backend-app-665762 frontendAppName=frontend-app-665762 sqlDatabaseName=$sqlDatabaseName sqlAdminUsername=$sqlAdminUsername sqlAdminPassword=$sqlAdminPassword keyVaultAccessObjectId=$keyVaultAccessObjectId sqlServerName=$sqlServerName azureAdTenantId=$azureAdTenantId backendAppClientId=$backendAppClientId frontendAppClientId=$frontendAppClientId spAppId=$spAppId spPassword=$spPassword adminGroupId=$adminGroupId userGroupId=$userGroupId
+# Variables
+RESOURCE_GROUP="dtaskrg"
+LOCATION="northeurope"
+ACR_NAME="acr0000"
+RANDOM_SUFFIX=$(openssl rand -hex 3)
+BACKEND_APP_NAME="backend-app-${RANDOM_SUFFIX}"
+FRONTEND_APP_NAME="frontend-app-${RANDOM_SUFFIX}"
+SQL_DATABASE_NAME="dtaskdb"
+SQL_SERVER_NAME="dtaskserver"
+SQL_ADMIN_USERNAME="sqladmin"
+SQL_ADMIN_PASSWORD=$(openssl rand -base64 16)
+BACKEND_PLAN_NAME="${BACKEND_APP_NAME}-plan"
+FRONTEND_PLAN_NAME="${FRONTEND_APP_NAME}-plan"
+KEY_VAULT_NAME="${ACR_NAME}-kv"
+KEY_VAULT_ACCESS_OBJECT_ID="58bf15bd-e182-4c81-a517-76a581ced7b4"
+SP_NAME="myServicePrincipal"
+FRONTEND_APP_REDIRECT_URI="http://localhost:3000"
+USER_EMAIL="raphael@rdgmh.onmicrosoft.com"  # Ensure this is set
+USER_DISPLAY_NAME="Raphael"
+USER_PASSWORD=$(openssl rand -base64 16) # Generate a random password
+ADMIN_GROUP_NAME="Admins"
+USER_GROUP_NAME="Users"
 
-# Sleep for 30 seconds to wait for ACR to be fully provisioned
-echo "Waiting for ACR to be fully provisioned..."
-sleep 30
+# Path to the Bicep file
+BICEP_FILE_PATH="/Users/raphaelgab-momoh/Desktop/success/spring-boot-react-example/main.bicep"
+
+# Export database username and password as environment variables
+export SQL_ADMIN_USERNAME="sqladmin"
+export SQL_ADMIN_PASSWORD=$(openssl rand -base64 16)
+
+# Print the exported variables for verification
+echo "Exported SQL_ADMIN_USERNAME: $SQL_ADMIN_USERNAME"
+echo "Exported SQL_ADMIN_PASSWORD: $SQL_ADMIN_PASSWORD"
+
+# Validate USER_EMAIL
+if [ -z "$USER_EMAIL" ]; then
+  echo "ERROR: USER_EMAIL is not set. Please provide a valid email address for the user."
+  exit 1
+fi
+
+# Validate USER_EMAIL format (basic check)
+if ! [[ "$USER_EMAIL" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
+  echo "ERROR: Invalid email format for USER_EMAIL. Please provide a valid email address."
+  exit 1
+fi
+
+# Check if Azure CLI is logged in
+if ! az account show > /dev/null 2>&1; then
+  echo "ERROR: Please login to Azure CLI using 'az login' before running this script."
+  exit 1
+fi
+
+# Fetch Azure AD Tenant ID
+AZURE_AD_TENANT_ID=$(az account show --query tenantId --output tsv)
+if [ -z "$AZURE_AD_TENANT_ID" ]; then
+  echo "ERROR: Failed to fetch Azure AD Tenant ID."
+  exit 1
+fi
+
+# Create Azure AD app registration for the backend
+BACKEND_APP_CLIENT_ID=$(az ad app create --display-name "${BACKEND_APP_NAME}-app" --query appId --output tsv)
+if [ -z "$BACKEND_APP_CLIENT_ID" ]; then
+  echo "ERROR: Failed to create Azure AD app registration for the backend."
+  exit 1
+fi
+
+# Create a service principal for the backend app
+az ad sp create --id $BACKEND_APP_CLIENT_ID
+
+# Create Azure AD app registration for the frontend
+FRONTEND_APP_CLIENT_ID=$(az ad app create --display-name "${FRONTEND_APP_NAME}-app" --query appId --output tsv)
+if [ -z "$FRONTEND_APP_CLIENT_ID" ]; then
+  echo "ERROR: Failed to create Azure AD app registration for the frontend."
+  exit 1
+fi
+
+# Create a service principal for the frontend app
+az ad sp create --id $FRONTEND_APP_CLIENT_ID
+
+# Create Azure AD groups if they don't exist
+ADMIN_GROUP_ID=$(az ad group list --display-name $ADMIN_GROUP_NAME --query "[].id" --output tsv)
+if [ -z "$ADMIN_GROUP_ID" ]; then
+  echo "Creating group $ADMIN_GROUP_NAME..."
+  ADMIN_GROUP_ID=$(az ad group create --display-name $ADMIN_GROUP_NAME --mail-nickname $ADMIN_GROUP_NAME --query id --output tsv)
+else
+  echo "Group $ADMIN_GROUP_NAME already exists."
+fi
+
+USER_GROUP_ID=$(az ad group list --display-name $USER_GROUP_NAME --query "[].id" --output tsv)
+if [ -z "$USER_GROUP_ID" ]; then
+  echo "Creating group $USER_GROUP_NAME..."
+  USER_GROUP_ID=$(az ad group create --display-name $USER_GROUP_NAME --mail-nickname $USER_GROUP_NAME --query id --output tsv)
+else
+  echo "Group $USER_GROUP_NAME already exists."
+fi
+
+# Manually set the Object ID of the existing user
+USER_OBJECT_ID="58bf15bd-e182-4c81-a517-76a581ced7b4"
+
+if [ -z "$USER_OBJECT_ID" ]; then
+  echo "ERROR: USER_OBJECT_ID is not set. Please provide the Object ID of the user."
+  exit 1
+fi
+
+# Check if the user is already a member of the admin group
+if ! az ad group member check --group $ADMIN_GROUP_ID --member-id $USER_OBJECT_ID --query "value" --output tsv; then
+  echo "Adding user $USER_EMAIL to group $ADMIN_GROUP_NAME..."
+  az ad group member add --group $ADMIN_GROUP_ID --member-id $USER_OBJECT_ID
+else
+  echo "User $USER_EMAIL is already a member of group $ADMIN_GROUP_NAME."
+fi
+
+# Check if the user is already a member of the user group
+if ! az ad group member check --group $USER_GROUP_ID --member-id $USER_OBJECT_ID --query "value" --output tsv; then
+  echo "Adding user $USER_EMAIL to group $USER_GROUP_NAME..."
+  az ad group member add --group $USER_GROUP_ID --member-id $USER_OBJECT_ID
+else
+  echo "User $USER_EMAIL is already a member of group $USER_GROUP_NAME."
+fi
+
+# Check if resource group exists and delete if it does
+if az group exists --name $RESOURCE_GROUP; then
+  echo "Resource group $RESOURCE_GROUP already exists. Deleting..."
+  az group delete --name $RESOURCE_GROUP --yes --no-wait
+  echo "Waiting for resource group $RESOURCE_GROUP to be deleted..."
+  az group wait --name $RESOURCE_GROUP --deleted
+fi
+
+# Create the resource group
+echo "Creating resource group $RESOURCE_GROUP..."
+az group create --name $RESOURCE_GROUP --location $LOCATION
+
+# Purge the deleted Key Vault if it exists
+deleted_vaults=$(az keyvault list-deleted --query "[?name=='${KEY_VAULT_NAME}'].name" -o tsv)
+if [[ -n $deleted_vaults ]]; then
+  echo "Purging deleted Key Vault $KEY_VAULT_NAME..."
+  az keyvault purge --name $KEY_VAULT_NAME --location $LOCATION
+fi
+
+# Check if ACR exists and delete if it does
+existing_acr=$(az acr show --name $ACR_NAME --resource-group $RESOURCE_GROUP --query "name" -o tsv 2>/dev/null || true)
+if [[ -n $existing_acr ]]; then
+  echo "ACR $ACR_NAME already exists. Deleting..."
+  az acr delete --name $ACR_NAME --resource-group $RESOURCE_GROUP --yes
+fi
+
+# Check if service principal exists and delete if it does
+existing_sp=$(az ad sp list --display-name $SP_NAME --query "[].appId" -o tsv)
+if [[ -n $existing_sp ]]; then
+  echo "Service principal $SP_NAME already exists. Deleting..."
+  az ad sp delete --id $existing_sp
+fi
+
+# Create Azure Container Registry
+echo "Creating Azure Container Registry $ACR_NAME..."
+az acr create --resource-group $RESOURCE_GROUP --name $ACR_NAME --sku Standard --admin-enabled true
+
+# Verify ACR creation
+ACR_ID=$(az acr show --name $ACR_NAME --resource-group $RESOURCE_GROUP --query id --output tsv)
+if [ -z "$ACR_ID" ]; then
+  echo "Failed to create ACR. Exiting."
+  exit 1
+fi
+
+# Create a service principal and assign AcrPush role
+SP_CREDENTIALS=$(az ad sp create-for-rbac --name $SP_NAME --scopes $ACR_ID --role AcrPush --query "{appId: appId, password: password, tenant: tenant}" --output json)
+SP_APP_ID=$(echo $SP_CREDENTIALS | jq -r .appId)
+SP_PASSWORD=$(echo $SP_CREDENTIALS | jq -r .password)
+SP_TENANT=$(echo $SP_CREDENTIALS | jq -r .tenant)
+
+echo "Service Principal ID: $SP_APP_ID"
+echo "Service Principal Password: $SP_PASSWORD"
+echo "Service Principal Tenant: $SP_TENANT"
+
+# Assign AcrPull role to the service principal
+az role assignment create --assignee $SP_APP_ID --role AcrPull --scope $ACR_ID
+
+# Login to ACR
+az acr login --name $ACR_NAME
+
+# Increase Docker client timeout
+export DOCKER_CLIENT_TIMEOUT=300
+export COMPOSE_HTTP_TIMEOUT=300
+
+# Verify Dockerfile exists in backend and frontend directories, create if not found
+if [ ! -f ./backend/Dockerfile ]; then
+  echo "Dockerfile not found in ./backend directory. Creating a default Dockerfile..."
+  cat <<EOF > ./backend/Dockerfile
+# Use an official OpenJDK runtime as a parent image
+FROM openjdk:11-jre-slim
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Copy the current directory contents into the container at /app
+COPY . /app
+
+# Make port 8080 available to the world outside this container
+EXPOSE 8080
+
+# Set environment variables
+ENV SPRING_PROFILES_ACTIVE=dev
+
+# Run the application
+CMD ["java", "-jar", "backend.jar"]
+EOF
+fi
+
+if [ ! -f ./frontend/Dockerfile ]; then
+  echo "Dockerfile not found in ./frontend directory. Creating a default Dockerfile..."
+  cat <<EOF > ./frontend/Dockerfile
+# Use an official Node.js runtime as a parent image
+FROM node:14
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Copy the current directory contents into the container at /app
+COPY . /app
+
+# Install any needed packages
+RUN npm install
+
+# Make port 80 available to the world outside this container
+EXPOSE 80
+
+# Set environment variables
+ENV REACT_APP_API_URL=http://backend:8080
+
+# Run the application
+CMD ["npm", "start"]
+EOF
+fi
 
 # Build and push backend Docker image
 echo "Building and pushing backend Docker image..."
 for i in {1..5}; do
-  docker build -t $ACR_NAME.azurecr.io/backend:latest ./backend && break || sleep 30
+  docker build -t $ACR_NAME.azurecr.io/backend:latest ./backend && break || sleep 15
 done
 for i in {1..5}; do
-  docker push $ACR_NAME.azurecr.io/backend:latest && break || sleep 30
+  docker push $ACR_NAME.azurecr.io/backend:latest && break || sleep 15
+done
+
+# Verify backend Docker image push completion
+for i in {1..5}; do
+  if az acr repository show --name $ACR_NAME --repository backend --query "tags[?contains(@, 'latest')]" | grep -q "latest"; then
+    echo "Backend Docker image push completed."
+    break
+  else
+    echo "Waiting for backend Docker image push to complete..."
+    sleep 15
+  fi
 done
 
 # Build and push frontend Docker image
 echo "Building and pushing frontend Docker image..."
 for i in {1..5}; do
-  docker build -t $ACR_NAME.azurecr.io/frontend:latest ./frontend && break || sleep 30
+  docker build -t $ACR_NAME.azurecr.io/frontend:latest ./frontend && break || sleep 15
 done
 for i in {1..5}; do
-  docker push $ACR_NAME.azurecr.io/frontend:latest && break || sleep 30
+  docker push $ACR_NAME.azurecr.io/frontend:latest && break || sleep 15
 done
+
+# Verify frontend Docker image push completion
+for i in {1..5}; do
+  if az acr repository show --name $ACR_NAME --repository frontend --query "tags[?contains(@, 'latest')]" | grep -q "latest"; then
+    echo "Frontend Docker image push completed."
+    break
+  else
+    echo "Waiting for frontend Docker image push to complete..."
+    sleep 15
+  fi
+done
+
+# Validate the Bicep file
+echo "Validating Bicep file..."
+az bicep build --file $BICEP_FILE_PATH || { echo "Bicep validation failed. Exiting."; exit 1; }
+
+# Deploy the infrastructure using Bicep
+echo "Deploying infrastructure using Bicep..."
+az deployment group create --resource-group $RESOURCE_GROUP --template-file $BICEP_FILE_PATH \
+  --parameters acrName=$ACR_NAME backendAppName=$BACKEND_APP_NAME frontendAppName=$FRONTEND_APP_NAME \
+  sqlDatabaseName=$SQL_DATABASE_NAME sqlAdminUsername=$SQL_ADMIN_USERNAME sqlAdminPassword=$SQL_ADMIN_PASSWORD \
+  keyVaultAccessObjectId=$KEY_VAULT_ACCESS_OBJECT_ID
 
 # Wait for resources to be fully provisioned
 echo "Waiting for resources to be fully provisioned..."
-sleep 40
+sleep 300
 
-# Retrieve URLs
-BACKEND_URL=$(az webapp show --resource-group dtaskrg --name backend-app-665762 --query defaultHostName -o tsv)
-FRONTEND_URL=$(az webapp show --resource-group dtaskrg --name frontend-app-665762 --query defaultHostName -o tsv)
+# Assign the managed identity to the backend app
+BACKEND_PRINCIPAL_ID=$(az webapp identity assign --name $BACKEND_APP_NAME --resource-group $RESOURCE_GROUP --query principalId --output tsv)
+if [ -z "$BACKEND_PRINCIPAL_ID" ]; then
+  echo "Failed to assign managed identity to backend app. Exiting."
+  exit 1
+fi
+
+# Assign the managed identity to the frontend app
+FRONTEND_PRINCIPAL_ID=$(az webapp identity assign --name $FRONTEND_APP_NAME --resource-group $RESOURCE_GROUP --query principalId --output tsv)
+if [ -z "$FRONTEND_PRINCIPAL_ID" ]; then
+  echo "Failed to assign managed identity to frontend app. Exiting."
+  exit 1
+fi
+
+# Grant access to the Key Vault
+az keyvault set-policy --name $KEY_VAULT_NAME --object-id $BACKEND_PRINCIPAL_ID --secret-permissions get list
+az keyvault set-policy --name $KEY_VAULT_NAME --object-id $FRONTEND_PRINCIPAL_ID --secret-permissions get list
+
+# Grant the user access to the Key Vault
+az keyvault set-policy --name $KEY_VAULT_NAME --object-id $USER_OBJECT_ID --secret-permissions get list
+
+# Output the URLs of the deployed applications
+BACKEND_URL=$(az webapp show --resource-group $RESOURCE_GROUP --name $BACKEND_APP_NAME --query defaultHostName -o tsv)
+FRONTEND_URL=$(az webapp show --resource-group $RESOURCE_GROUP --name $FRONTEND_APP_NAME --query defaultHostName -o tsv)
 
 echo "Backend URL: https://$BACKEND_URL"
 echo "Frontend URL: https://$FRONTEND_URL"
 
-# Additional deployment steps or configurations
-# ...
+echo "Deployment completed successfully!"
 
-echo "Deployment completed."
-```
-### Summary of the `deploy.sh` Script
+Explanation of the Script
+Set Environment Variables: Define the necessary environment variables such as resource group, location, ACR name, backend and frontend app names, SQL database and server names, admin username and password, and other required parameters.
 
-The `deploy.sh` script automates the deployment of infrastructure and application components using Azure Bicep and Docker. Here is a summary of its key steps:
+Export Database Username and Password: Export the database username and password as environment variables.
 
-1. **Set Parameters:**
-   - Retrieves and sets various parameters required for the deployment, such as SQL database name, admin username and password, Key Vault access object ID, SQL server name, Azure AD tenant ID, application client IDs, service principal ID and password, and group IDs.
+Validate User Email: Ensure the USER_EMAIL is set and has a valid format.
 
-2. **Deploy Infrastructure Using Bicep:**
-   - Uses the Azure CLI to deploy the infrastructure defined in the Bicep file (`main.bicep`) to the specified resource group (`dtaskrg`).
-   - Parameters for the Bicep deployment include ACR name, backend and frontend app names, SQL database details, Key Vault access object ID, Azure AD tenant ID, application client IDs, service principal credentials, and group IDs.
+Check Azure CLI Login: Ensure the user is logged in to Azure CLI.
 
-3. **Wait for ACR Provisioning:**
-   - Sleeps for 30 seconds to allow the Azure Container Registry (ACR) to be fully provisioned.
+Fetch Azure AD Tenant ID: Retrieve the Azure AD Tenant ID.
 
-4. **Build and Push Docker Images:**
-   - Builds and pushes the backend Docker image to ACR, retrying up to 5 times with a 30-second sleep interval between attempts.
-   - Builds and pushes the frontend Docker image to ACR, retrying up to 5 times with a 30-second sleep interval between attempts.
+Create Azure AD App Registrations and Service Principals: Create app registrations and service principals for the backend and frontend apps.
 
-5. **Wait for Resources to be Fully Provisioned:**
-   - Sleeps for 40 seconds to allow all resources to be fully provisioned.
+Create Azure AD Groups: Create admin and user groups if they don't exist.
 
-6. **Retrieve and Display URLs:**
-   - Uses the Azure CLI to retrieve the default hostnames for the backend and frontend applications.
-   - Displays the URLs for the backend and frontend applications.
+Add User to Groups: Add the user to the admin and user groups if they are not already members.
 
-7. **Additional Deployment Steps:**
-   - Placeholder for any additional deployment steps or configurations that may be required.
+Create Resource Group: Create the resource group if it doesn't exist.
 
-8. **Completion Message:**
-   - Prints a message indicating that the deployment is completed.
+Purge Deleted Key Vault: Purge the deleted Key Vault if it exists.
 
-For any questions or issues, please open an issue in the repository.
+Create ACR: Create the Azure Container Registry (ACR).
 
----
+Create Service Principal for ACR: Create a service principal and assign the AcrPush role.
+
+Login to ACR: Log in to the ACR.
+
+Build and Push Docker Images: Build and push the backend and frontend Docker images to ACR.
+
+Validate Bicep File: Validate the Bicep file.
+
+Deploy Infrastructure Using Bicep: Deploy the infrastructure using the Bicep file.
+
+Assign Managed Identity to Apps: Assign managed identities to the backend and frontend apps.
+
+Grant Access to Key Vault: Grant access to the Key Vault for the managed identities and the user.
+
+Output URLs of Deployed Applications: Output the URLs of the deployed backend and frontend applications.
 
 This `README.md` provides a clear and concise guide for setting up, deploying, and using the project.

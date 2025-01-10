@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.32.4.45862",
-      "templateHash": "16300823779634471270"
+      "templateHash": "9983073640430987898"
     }
   },
   "parameters": {
@@ -21,11 +21,8 @@
     "sqlAdminPassword": {
       "type": "securestring"
     },
-    "adminGroupId": {
-      "type": "string"
-    },
-    "userGroupId": {
-      "type": "string"
+    "adminGroupIds": {
+      "type": "array"
     },
     "keyVaultName": {
       "type": "string"
@@ -44,9 +41,90 @@
     },
     "acrName": {
       "type": "string"
+    },
+    "sqlDatabaseName": {
+      "type": "string",
+      "defaultValue": "dtaskdb"
+    }
+  },
+  "variables": {
+    "backendAppServicePlanSku": {
+      "name": "S1",
+      "tier": "Standard"
+    },
+    "frontendAppServicePlanSku": {
+      "name": "S1",
+      "tier": "Standard"
     }
   },
   "resources": [
+    {
+      "type": "Microsoft.ContainerRegistry/registries",
+      "apiVersion": "2021-09-01",
+      "name": "[parameters('acrName')]",
+      "location": "[resourceGroup().location]",
+      "sku": {
+        "name": "Standard"
+      },
+      "properties": {
+        "adminUserEnabled": true
+      }
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults",
+      "apiVersion": "2021-04-01-preview",
+      "name": "[parameters('keyVaultName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "copy": [
+          {
+            "name": "accessPolicies",
+            "count": "[length(parameters('adminGroupIds'))]",
+            "input": {
+              "tenantId": "[subscription().tenantId]",
+              "objectId": "[parameters('adminGroupIds')[copyIndex('accessPolicies')]]",
+              "permissions": {
+                "secrets": [
+                  "get",
+                  "list",
+                  "set",
+                  "delete"
+                ]
+              }
+            }
+          }
+        ],
+        "tenantId": "[subscription().tenantId]",
+        "sku": {
+          "family": "A",
+          "name": "standard"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2021-06-01-preview",
+      "name": "[format('{0}/{1}', parameters('keyVaultName'), 'acr-username')]",
+      "properties": {
+        "value": "[listCredentials(resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), '2021-09-01').username]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2021-06-01-preview",
+      "name": "[format('{0}/{1}', parameters('keyVaultName'), 'acr-password')]",
+      "properties": {
+        "value": "[listCredentials(resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), '2021-09-01').passwords[0].value]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+      ]
+    },
     {
       "type": "Microsoft.Sql/servers",
       "apiVersion": "2021-02-01-preview",
@@ -60,7 +138,7 @@
     {
       "type": "Microsoft.Sql/servers/databases",
       "apiVersion": "2021-02-01-preview",
-      "name": "[format('{0}/{1}', parameters('sqlServerName'), 'dtaskdb')]",
+      "name": "[format('{0}/{1}', parameters('sqlServerName'), parameters('sqlDatabaseName'))]",
       "location": "[parameters('location')]",
       "properties": {
         "collation": "SQL_Latin1_General_CP1_CI_AS",
@@ -72,51 +150,181 @@
       ]
     },
     {
-      "type": "Microsoft.KeyVault/vaults",
-      "apiVersion": "2021-04-01-preview",
-      "name": "[parameters('keyVaultName')]",
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2021-02-01",
+      "name": "[parameters('backendPlanName')]",
       "location": "[parameters('location')]",
+      "sku": "[variables('backendAppServicePlanSku')]",
       "properties": {
-        "tenantId": "[subscription().tenantId]",
-        "sku": {
-          "family": "A",
-          "name": "standard"
-        },
-        "accessPolicies": [
-          {
-            "tenantId": "[subscription().tenantId]",
-            "objectId": "[parameters('adminGroupId')]",
-            "permissions": {
-              "secrets": [
-                "get",
-                "list",
-                "set",
-                "delete"
-              ]
-            }
-          },
-          {
-            "tenantId": "[subscription().tenantId]",
-            "objectId": "[parameters('userGroupId')]",
-            "permissions": {
-              "secrets": [
-                "get",
-                "list"
-              ]
-            }
-          }
-        ]
+        "reserved": true
       }
     },
     {
-      "type": "Microsoft.Insights/components",
-      "apiVersion": "2020-02-02",
-      "name": "[format('{0}-appinsights', parameters('keyVaultName'))]",
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2021-02-01",
+      "name": "[parameters('frontendPlanName')]",
       "location": "[parameters('location')]",
-      "kind": "web",
+      "sku": "[variables('frontendAppServicePlanSku')]",
       "properties": {
-        "Application_Type": "web"
+        "reserved": true
       }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2021-02-01",
+      "name": "[parameters('backendAppName')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', parameters('backendPlanName'))]",
+        "siteConfig": {
+          "appSettings": [
+            {
+              "name": "DOCKER_REGISTRY_SERVER_URL",
+              "value": "[format('https://{0}', reference(resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), '2021-09-01').loginServer)]"
+            },
+            {
+              "name": "DOCKER_REGISTRY_SERVER_USERNAME",
+              "value": "[format('@Microsoft.KeyVault(SecretUri={0})', reference(resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'acr-username'), '2021-06-01-preview').secretUri)]"
+            },
+            {
+              "name": "DOCKER_REGISTRY_SERVER_PASSWORD",
+              "value": "[format('@Microsoft.KeyVault(SecretUri={0})', reference(resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'acr-password'), '2021-06-01-preview').secretUri)]"
+            },
+            {
+              "name": "WEBSITES_ENABLE_APP_SERVICE_STORAGE",
+              "value": "false"
+            },
+            {
+              "name": "SPRING_DATASOURCE_URL",
+              "value": "[format('jdbc:sqlserver://{0}.database.windows.net:1433;database={1};encrypt=true;trustServerCertificate=false;hostNameInCertificate=*.database.windows.net;loginTimeout=30;', parameters('sqlServerName'), parameters('sqlDatabaseName'))]"
+            },
+            {
+              "name": "SPRING_DATASOURCE_USERNAME",
+              "value": "[parameters('sqlAdminUsername')]"
+            },
+            {
+              "name": "SPRING_DATASOURCE_PASSWORD",
+              "value": "[parameters('sqlAdminPassword')]"
+            },
+            {
+              "name": "APPINSIGHTS_INSTRUMENTATIONKEY",
+              "value": "[reference(resourceId('Microsoft.Insights/components', format('{0}-appinsights', parameters('keyVaultName'))), '2020-02-02').InstrumentationKey]"
+            }
+          ],
+          "linuxFxVersion": "[format('DOCKER|{0}/backend:latest', reference(resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), '2021-09-01').loginServer)]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'acr-password')]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'acr-username')]",
+        "[resourceId('Microsoft.Insights/components', format('{0}-appinsights', parameters('keyVaultName')))]",
+        "[resourceId('Microsoft.Web/serverfarms', parameters('backendPlanName'))]",
+        "[resourceId('Microsoft.Sql/servers', parameters('sqlServerName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2021-02-01",
+      "name": "[parameters('frontendAppName')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', parameters('frontendPlanName'))]",
+        "siteConfig": {
+          "appSettings": [
+            {
+              "name": "DOCKER_REGISTRY_SERVER_URL",
+              "value": "[format('https://{0}', reference(resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), '2021-09-01').loginServer)]"
+            },
+            {
+              "name": "DOCKER_REGISTRY_SERVER_USERNAME",
+              "value": "[format('@Microsoft.KeyVault(SecretUri={0})', reference(resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'acr-username'), '2021-06-01-preview').secretUri)]"
+            },
+            {
+              "name": "DOCKER_REGISTRY_SERVER_PASSWORD",
+              "value": "[format('@Microsoft.KeyVault(SecretUri={0})', reference(resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'acr-password'), '2021-06-01-preview').secretUri)]"
+            },
+            {
+              "name": "WEBSITES_ENABLE_APP_SERVICE_STORAGE",
+              "value": "false"
+            },
+            {
+              "name": "APPINSIGHTS_INSTRUMENTATIONKEY",
+              "value": "[reference(resourceId('Microsoft.Insights/components', format('{0}-appinsights', parameters('keyVaultName'))), '2020-02-02').InstrumentationKey]"
+            }
+          ],
+          "linuxFxVersion": "[format('DOCKER|{0}/frontend:latest', reference(resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), '2021-09-01').loginServer)]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'acr-password')]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'acr-username')]",
+        "[resourceId('Microsoft.Insights/components', format('{0}-appinsights', parameters('keyVaultName')))]",
+        "[resourceId('Microsoft.Web/serverfarms', parameters('frontendPlanName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2020-04-01-preview",
+      "scope": "[format('Microsoft.ContainerRegistry/registries/{0}', parameters('acrName'))]",
+      "name": "[uniqueString(resourceId('Microsoft.Web/sites', parameters('backendAppName')), resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), 'AcrPush')]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '8311e382-0749-4cb8-b61a-304f252e45ec')]",
+        "principalId": "[reference(resourceId('Microsoft.Web/sites', parameters('backendAppName')), '2021-02-01', 'full').identity.principalId]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName'))]",
+        "[resourceId('Microsoft.Web/sites', parameters('backendAppName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2020-04-01-preview",
+      "scope": "[format('Microsoft.ContainerRegistry/registries/{0}', parameters('acrName'))]",
+      "name": "[uniqueString(resourceId('Microsoft.Web/sites', parameters('backendAppName')), resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), 'AcrPull')]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')]",
+        "principalId": "[reference(resourceId('Microsoft.Web/sites', parameters('backendAppName')), '2021-02-01', 'full').identity.principalId]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName'))]",
+        "[resourceId('Microsoft.Web/sites', parameters('backendAppName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2020-04-01-preview",
+      "scope": "[format('Microsoft.ContainerRegistry/registries/{0}', parameters('acrName'))]",
+      "name": "[uniqueString(resourceId('Microsoft.Web/sites', parameters('frontendAppName')), resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), 'AcrPush')]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '8311e382-0749-4cb8-b61a-304f252e45ec')]",
+        "principalId": "[reference(resourceId('Microsoft.Web/sites', parameters('frontendAppName')), '2021-02-01', 'full').identity.principalId]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName'))]",
+        "[resourceId('Microsoft.Web/sites', parameters('frontendAppName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2020-04-01-preview",
+      "scope": "[format('Microsoft.ContainerRegistry/registries/{0}', parameters('acrName'))]",
+      "name": "[uniqueString(resourceId('Microsoft.Web/sites', parameters('frontendAppName')), resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), 'AcrPull')]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')]",
+        "principalId": "[reference(resourceId('Microsoft.Web/sites', parameters('frontendAppName')), '2021-02-01', 'full').identity.principalId]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName'))]",
+        "[resourceId('Microsoft.Web/sites', parameters('frontendAppName'))]"
+      ]
     },
     {
       "type": "Microsoft.OperationalInsights/workspaces",
@@ -129,6 +337,64 @@
         },
         "retentionInDays": 30
       }
+    },
+    {
+      "type": "Microsoft.Insights/diagnosticSettings",
+      "apiVersion": "2021-05-01-preview",
+      "scope": "[format('Microsoft.Web/sites/{0}', parameters('backendAppName'))]",
+      "name": "appServiceDiagnostics",
+      "properties": {
+        "workspaceId": "[resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-loganalytics', parameters('keyVaultName')))]",
+        "logs": [
+          {
+            "category": "AppServiceHTTPLogs",
+            "enabled": true
+          },
+          {
+            "category": "AppServiceConsoleLogs",
+            "enabled": true
+          }
+        ],
+        "metrics": [
+          {
+            "category": "AllMetrics",
+            "enabled": true
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', parameters('backendAppName'))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-loganalytics', parameters('keyVaultName')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Insights/diagnosticSettings",
+      "apiVersion": "2021-05-01-preview",
+      "scope": "[format('Microsoft.Web/sites/{0}', parameters('frontendAppName'))]",
+      "name": "appServiceDiagnosticsFrontend",
+      "properties": {
+        "workspaceId": "[resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-loganalytics', parameters('keyVaultName')))]",
+        "logs": [
+          {
+            "category": "AppServiceHTTPLogs",
+            "enabled": true
+          },
+          {
+            "category": "AppServiceConsoleLogs",
+            "enabled": true
+          }
+        ],
+        "metrics": [
+          {
+            "category": "AllMetrics",
+            "enabled": true
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', parameters('frontendAppName'))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-loganalytics', parameters('keyVaultName')))]"
+      ]
     },
     {
       "type": "Microsoft.Insights/diagnosticSettings",
@@ -150,29 +416,13 @@
       ]
     },
     {
-      "type": "Microsoft.Web/serverfarms",
-      "apiVersion": "2021-02-01",
-      "name": "[parameters('backendPlanName')]",
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[format('{0}-appinsights', parameters('keyVaultName'))]",
       "location": "[parameters('location')]",
-      "sku": {
-        "name": "B1",
-        "tier": "Basic"
-      },
+      "kind": "web",
       "properties": {
-        "reserved": true
-      }
-    },
-    {
-      "type": "Microsoft.Web/serverfarms",
-      "apiVersion": "2021-02-01",
-      "name": "[parameters('frontendPlanName')]",
-      "location": "[parameters('location')]",
-      "sku": {
-        "name": "B1",
-        "tier": "Basic"
-      },
-      "properties": {
-        "reserved": true
+        "Application_Type": "web"
       }
     },
     {
@@ -212,115 +462,6 @@
       }
     },
     {
-      "type": "Microsoft.Web/sites",
-      "apiVersion": "2021-02-01",
-      "name": "[parameters('backendAppName')]",
-      "location": "[parameters('location')]",
-      "properties": {
-        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', parameters('backendPlanName'))]",
-        "httpsOnly": true,
-        "siteConfig": {
-          "appSettings": [
-            {
-              "name": "WEBSITE_RUN_FROM_PACKAGE",
-              "value": "1"
-            },
-            {
-              "name": "APPINSIGHTS_INSTRUMENTATIONKEY",
-              "value": "[reference(resourceId('Microsoft.Insights/components', format('{0}-appinsights', parameters('keyVaultName'))), '2020-02-02').InstrumentationKey]"
-            },
-            {
-              "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
-              "value": "[reference(resourceId('Microsoft.Insights/components', format('{0}-appinsights', parameters('keyVaultName'))), '2020-02-02').ConnectionString]"
-            },
-            {
-              "name": "AZURE_SQL_CONNECTION_STRING",
-              "value": "[format('Server=tcp:{0};Initial Catalog=mydatabase;Persist Security Info=False;User ID={1};Password={2};MultipleActiveResultSets=False;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;', reference(resourceId('Microsoft.Sql/servers', parameters('sqlServerName')), '2021-02-01-preview').fullyQualifiedDomainName, parameters('sqlAdminUsername'), parameters('sqlAdminPassword'))]"
-            },
-            {
-              "name": "PORT",
-              "value": "8080"
-            },
-            {
-              "name": "DOCKER_REGISTRY_SERVER_URL",
-              "value": "[format('https://{0}.azurecr.io', parameters('acrName'))]"
-            },
-            {
-              "name": "DOCKER_REGISTRY_SERVER_USERNAME",
-              "value": "$(acrName)"
-            },
-            {
-              "name": "DOCKER_REGISTRY_SERVER_PASSWORD",
-              "value": "$(acrPassword)"
-            }
-          ],
-          "linuxFxVersion": "[format('DOCKER|{0}.azurecr.io/backend:latest', parameters('acrName'))]"
-        }
-      },
-      "identity": {
-        "type": "SystemAssigned"
-      },
-      "dependsOn": [
-        "[resourceId('Microsoft.Insights/components', format('{0}-appinsights', parameters('keyVaultName')))]",
-        "[resourceId('Microsoft.Web/serverfarms', parameters('backendPlanName'))]",
-        "[resourceId('Microsoft.Network/networkSecurityGroups', format('{0}-nsg', parameters('backendAppName')))]",
-        "[resourceId('Microsoft.Sql/servers/databases', parameters('sqlServerName'), 'dtaskdb')]",
-        "[resourceId('Microsoft.Sql/servers', parameters('sqlServerName'))]"
-      ]
-    },
-    {
-      "type": "Microsoft.Web/sites",
-      "apiVersion": "2021-02-01",
-      "name": "[parameters('frontendAppName')]",
-      "location": "[parameters('location')]",
-      "properties": {
-        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', parameters('frontendPlanName'))]",
-        "httpsOnly": true,
-        "siteConfig": {
-          "appSettings": [
-            {
-              "name": "WEBSITE_RUN_FROM_PACKAGE",
-              "value": "1"
-            },
-            {
-              "name": "APPINSIGHTS_INSTRUMENTATIONKEY",
-              "value": "[reference(resourceId('Microsoft.Insights/components', format('{0}-appinsights', parameters('keyVaultName'))), '2020-02-02').InstrumentationKey]"
-            },
-            {
-              "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
-              "value": "[reference(resourceId('Microsoft.Insights/components', format('{0}-appinsights', parameters('keyVaultName'))), '2020-02-02').ConnectionString]"
-            },
-            {
-              "name": "REACT_APP_API_URL",
-              "value": "[format('https://{0}', reference(resourceId('Microsoft.Web/sites', parameters('backendAppName')), '2021-02-01').defaultHostName)]"
-            },
-            {
-              "name": "DOCKER_REGISTRY_SERVER_URL",
-              "value": "[format('https://{0}.azurecr.io', parameters('acrName'))]"
-            },
-            {
-              "name": "DOCKER_REGISTRY_SERVER_USERNAME",
-              "value": "$(acrName)"
-            },
-            {
-              "name": "DOCKER_REGISTRY_SERVER_PASSWORD",
-              "value": "$(acrPassword)"
-            }
-          ],
-          "linuxFxVersion": "[format('DOCKER|{0}.azurecr.io/frontend:latest', parameters('acrName'))]"
-        }
-      },
-      "identity": {
-        "type": "SystemAssigned"
-      },
-      "dependsOn": [
-        "[resourceId('Microsoft.Insights/components', format('{0}-appinsights', parameters('keyVaultName')))]",
-        "[resourceId('Microsoft.Web/sites', parameters('backendAppName'))]",
-        "[resourceId('Microsoft.Web/serverfarms', parameters('frontendPlanName'))]",
-        "[resourceId('Microsoft.Network/networkSecurityGroups', format('{0}-nsg', parameters('backendAppName')))]"
-      ]
-    },
-    {
       "type": "Microsoft.Insights/autoscalesettings",
       "apiVersion": "2021-05-01-preview",
       "name": "[format('{0}-autoscale', parameters('backendAppName'))]",
@@ -335,25 +476,6 @@
               "default": "1"
             },
             "rules": [
-              {
-                "metricTrigger": {
-                  "metricName": "CpuPercentage",
-                  "metricNamespace": "Microsoft.Web/serverfarms",
-                  "timeGrain": "PT1M",
-                  "statistic": "Average",
-                  "timeWindow": "PT5M",
-                  "timeAggregation": "Average",
-                  "operator": "GreaterThan",
-                  "threshold": 70,
-                  "metricResourceUri": "[resourceId('Microsoft.Web/serverfarms', parameters('backendPlanName'))]"
-                },
-                "scaleAction": {
-                  "direction": "Increase",
-                  "type": "ChangeCount",
-                  "value": "1",
-                  "cooldown": "PT1M"
-                }
-              },
               {
                 "metricTrigger": {
                   "metricName": "CpuPercentage",
@@ -416,25 +538,6 @@
                   "value": "1",
                   "cooldown": "PT1M"
                 }
-              },
-              {
-                "metricTrigger": {
-                  "metricName": "CpuPercentage",
-                  "metricNamespace": "Microsoft.Web/serverfarms",
-                  "timeGrain": "PT1M",
-                  "statistic": "Average",
-                  "timeWindow": "PT5M",
-                  "timeAggregation": "Average",
-                  "operator": "GreaterThan",
-                  "threshold": 70,
-                  "metricResourceUri": "[resourceId('Microsoft.Web/serverfarms', parameters('frontendPlanName'))]"
-                },
-                "scaleAction": {
-                  "direction": "Increase",
-                  "type": "ChangeCount",
-                  "value": "1",
-                  "cooldown": "PT1M"
-                }
               }
             ]
           }
@@ -446,5 +549,15 @@
         "[resourceId('Microsoft.Web/serverfarms', parameters('frontendPlanName'))]"
       ]
     }
-  ]
+  ],
+  "outputs": {
+    "backendAppUrl": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Web/sites', parameters('backendAppName')), '2021-02-01').defaultHostName]"
+    },
+    "frontendAppUrl": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Web/sites', parameters('frontendAppName')), '2021-02-01').defaultHostName]"
+    }
+  }
 }
